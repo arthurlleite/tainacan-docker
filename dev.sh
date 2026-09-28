@@ -29,8 +29,19 @@ function fn_prepare_volumes {
 }
 
 function fn_wait_db {
+    if [ "$(docker inspect -f '{{.State.Running}}' tainacan_db 2> /dev/null)" != "true" ]; then
+        echo "The database container is not running. Start the environment with: ./dev.sh --start"
+        exit 1
+    fi
+
     echo "Waiting for the database..."
+    local tries=0
     until docker exec tainacan_db mariadb-admin ping -uroot -ptainacan --silent > /dev/null 2>&1; do
+        tries=$((tries + 1))
+        if [ $tries -ge 30 ]; then
+            echo "The database did not answer after 60 seconds. Check its logs with: docker logs tainacan_db"
+            exit 1
+        fi
         sleep 2
     done
 }
@@ -117,7 +128,15 @@ function fn_run_tests {
         fi
     " || exit 1
 
+    # To avoid leaving root-owned files on mounted volumes, the test folder is created as root then ownership is changed to the host user 
+    # Files under /tmp are also changed to the host user, in case there are temporary files
     $BUILD_EXEC_ROOT bash -c "
+        mkdir -p \$WORDPRESS_PATH_TEST &&
+        chown -R $PUID:$PGID \$WORDPRESS_PATH_TEST &&
+        find /tmp -mindepth 1 -maxdepth 1 -user root -exec chown -R $PUID:$PGID {} +
+    " || exit 1
+
+    $BUILD_EXEC bash -c "
         cd /src/tainacan &&
         if [ ! -d \$WP_TESTS_DIR ]; then
             ./tests/bin/install-wp-tests.sh \$WORDPRESS_DB_TEST \$WORDPRESS_DB_USER \$WORDPRESS_DB_PASSWORD \$WORDPRESS_PATH_TEST \$WORDPRESS_DB_HOST latest true || exit 1
